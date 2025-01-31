@@ -42,16 +42,16 @@ def parse_diagnostic_file(file_content: str) -> dict:
 
             # Convertimos target_id a int si es posible
             try:
-                target_id = int(target_id)
+                target_id_converted = int(target_id)
             except ValueError:
-                pass  # si no es numérico, lo dejamos como string
+                target_id_converted = target_id  # si no es numérico, lo dejamos como string
 
             channels_data.append({
                 "site_id": int(current_site_id),
                 "channel_number": int(channel_number),
                 "logical": int(logical),
                 "source_id": source_id,
-                "target_id": target_id,
+                "target_id": target_id_converted,
                 "calltype": calltype,
                 "status": status,
                 "allocated_time": int(allocated_time),
@@ -61,7 +61,7 @@ def parse_diagnostic_file(file_content: str) -> dict:
 
     # --- PARSEO Dynamic Registrations ---
     registration_pattern = re.compile(
-        r"source:(\S+)\s+username:\s*(\S*)\s+siteID:(\S+)\s+TGList:(\S*)\s+active:(\S+)\s+timestamp:(\d+)",
+        r"source:(\S+)\s+username:\s*(\S*)\s+siteID:(\S+)\s+TGList:(\S*)\s+active:(\S+).*?timestamp:(\d+)",
         re.IGNORECASE
     )
 
@@ -122,7 +122,7 @@ def parse_multiple_files(uploaded_files) -> dict:
     - 'site_id' -> 'sitio'
     - 'tg_list' -> 'grupo_num' y 'grupo' (en registrations_df)
     - 'tg_id' -> 'grupo_num' y 'grupo' (en tgs_affiliations_df)
-    - 'target_id' -> 'grupo_num' y 'grupo' (en channels_df)
+    - 'target_id' se mantiene para topología
     - Extra: asignar "Hora" en base al nombre del archivo (ej: '10.txt' => hora=10).
     """
     all_channels = []
@@ -153,9 +153,9 @@ def parse_multiple_files(uploaded_files) -> dict:
         113: 'SU-RELAVES',
         114: 'SU-GERENCIA PROYECTO',
         117: 'SU-GERENCIA PROYECTO 01',
-        119: 'ES-PERF TRONAD',
         115: 'ES-OP MINA',
         116: 'ES-COORD MINA',
+        119: 'ES-PERF TRONAD',
         122: 'ES-MANTENC MINA',
         123: 'ES-SERV MINA',
         124: 'ES-PLAN DESA',
@@ -238,12 +238,16 @@ def parse_multiple_files(uploaded_files) -> dict:
             df.rename(columns={"site_id": "sitio"}, inplace=True)
             df["sitio"] = df["sitio"].apply(lambda x: site_map[x] if x in site_map else x)
 
-    # Renombramos target_id -> grupo_num y mapear a grupo en channels_df
+    # Crear 'grupo_num' y 'grupo' sin renombrar 'target_id'
     if "target_id" in channels_df.columns:
-        channels_df.rename(columns={"target_id": "grupo_num"}, inplace=True)
-        # Mapear 'grupo_num' a 'grupo' usando grupo_map o asignar 'Grupo 400-499' si está en el rango
+        # Asignar 'grupo_num' basado en 'target_id'
+        channels_df["grupo_num"] = channels_df["target_id"].apply(
+            lambda x: x if isinstance(x, int) else (int(x) if isinstance(x, str) and x.isdigit() else x)
+        )
         channels_df["grupo"] = channels_df["grupo_num"].apply(
-            lambda x: grupo_map[x] if (isinstance(x, int) and x in grupo_map) else ('Grupo 400-499' if 400 <= x < 500 else x)
+            lambda x: grupo_map[x] if (isinstance(x, int) and x in grupo_map) else (
+                'Grupo 400-499' if isinstance(x, int) and 400 <= x < 500 else x
+            )
         )
 
     # Renombramos tg_list -> grupo_num y mapear a grupo en registrations_df
@@ -255,7 +259,9 @@ def parse_multiple_files(uploaded_files) -> dict:
         registrations_df['grupo_num'] = pd.to_numeric(registrations_df['grupo_num'], errors='coerce')
         # Mapear a grupo usando grupo_map o asignar 'Grupo 400-499' si está en el rango
         registrations_df["grupo"] = registrations_df["grupo_num"].apply(
-            lambda x: grupo_map[x] if (pd.notnull(x) and x in grupo_map) else ('Grupo 400-499' if 400 <= x < 500 else x)
+            lambda x: grupo_map[x] if (pd.notnull(x) and x in grupo_map) else (
+                'Grupo 400-499' if isinstance(x, int) and 400 <= x < 500 else x
+            )
         )
 
     # Renombramos tg_id -> grupo_num y mapear a grupo en tgs_affiliations_df
@@ -264,7 +270,9 @@ def parse_multiple_files(uploaded_files) -> dict:
         tgs_affiliations_df["grupo_num"] = pd.to_numeric(tgs_affiliations_df["grupo_num"], errors='coerce')
         # Mapear a grupo usando grupo_map o asignar 'Grupo 400-499' si está en el rango
         tgs_affiliations_df["grupo"] = tgs_affiliations_df["grupo_num"].apply(
-            lambda x: grupo_map[x] if (pd.notnull(x) and x in grupo_map) else ('Grupo 400-499' if 400 <= x < 500 else x)
+            lambda x: grupo_map[x] if (pd.notnull(x) and x in grupo_map) else (
+                'Grupo 400-499' if isinstance(x, int) and 400 <= x < 500 else x
+            )
         )
 
     return {
