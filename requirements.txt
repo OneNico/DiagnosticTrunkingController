@@ -4,3 +4,4 @@ plotly
 numpy
 pyvis
 xlsxwriter
+matplotlib
