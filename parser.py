@@ -1,41 +1,30 @@
-# parser.py
 import re
 import pandas as pd
+
 
 def parse_diagnostic_file(file_content: str) -> dict:
     """
     Procesa el contenido de un archivo de diagnóstico y retorna
-    varios DataFrames o diccionarios con la información relevante.
+    varios DataFrames con la información relevante.
 
-    Retorna un diccionario con, por ejemplo:
-      {
-        "channels_df": pd.DataFrame(...),
-        "registrations_df": pd.DataFrame(...),
-        "tgs_affiliations_df": pd.DataFrame(...),
-        ...
-      }
+    No asignamos hora aquí. Eso se hará en parse_multiple_files
+    en función del nombre del archivo.
     """
-    # Inicializamos estructuras donde guardaremos resultados
     channels_data = []
     registrations_data = []
     tg_affiliations_data = []
 
-    # --- EJEMPLO 1: PARSEAR "Channel Status" ---
-    # Buscamos secciones que empiezan con algo como "Site ID: X" hasta "Sites End" (simplificado)
-    # Dentro, buscamos las líneas de canales:
-    #   Channel 9 Logical: 9 SourceID: 50027 TargetID: 101 CallType:group-voice-call Status: Busy ...
+    # --- PARSEO Channels ---
     channel_pattern = re.compile(
         r"Channel\s+(\d+)\s+Logical:\s+(\d+)\s+SourceID:\s+(\S+)\s+TargetID:\s+(\S+)"
-        r"\s+CallType:(\S+)\s+Status:\s+(\S+)\s+Allocated Time:\s+(\d+)", re.IGNORECASE
+        r"\s+CallType:(\S+)\s+Status:\s+(\S+)\s+Allocated Time:\s+(\d+)",
+        re.IGNORECASE
     )
-
-    # Para capturar de qué "Site ID" estamos hablando, buscaremos
-    # líneas tipo "Site ID: 2" y lo guardamos hasta que encontremos otro.
     site_id_pattern = re.compile(r"Site ID:\s+(\d+)", re.IGNORECASE)
 
     current_site_id = None
-
     lines = file_content.splitlines()
+
     for line in lines:
         site_match = site_id_pattern.search(line)
         if site_match:
@@ -51,6 +40,12 @@ def parse_diagnostic_file(file_content: str) -> dict:
             status = channel_match.group(6)
             allocated_time = channel_match.group(7)
 
+            # Convertimos target_id a int si es posible
+            try:
+                target_id = int(target_id)
+            except ValueError:
+                pass  # si no es numérico, lo dejamos como string
+
             channels_data.append({
                 "site_id": int(current_site_id),
                 "channel_number": int(channel_number),
@@ -62,12 +57,9 @@ def parse_diagnostic_file(file_content: str) -> dict:
                 "allocated_time": int(allocated_time),
             })
 
-    # Convertimos a DataFrame
     channels_df = pd.DataFrame(channels_data)
 
-    # --- EJEMPLO 2: PARSEAR "Dynamic Registrations" ---
-    # Líneas típicas:
-    #   source:32001 username: siteID:1 TGList:602  active:true timestamp:1738238968
+    # --- PARSEO Dynamic Registrations ---
     registration_pattern = re.compile(
         r"source:(\S+)\s+username:\s*(\S*)\s+siteID:(\S+)\s+TGList:(\S*)\s+active:(\S+)\s+timestamp:(\d+)",
         re.IGNORECASE
@@ -78,7 +70,7 @@ def parse_diagnostic_file(file_content: str) -> dict:
         if reg_match:
             source_id = reg_match.group(1)
             username = reg_match.group(2)
-            site_id = reg_match.group(3)
+            site_id = int(reg_match.group(3))
             tg_list = reg_match.group(4)
             active = reg_match.group(5)
             timestamp = reg_match.group(6)
@@ -93,35 +85,28 @@ def parse_diagnostic_file(file_content: str) -> dict:
 
     registrations_df = pd.DataFrame(registrations_data)
 
-    # --- EJEMPLO 3: PARSEAR "Dynamically Affiliated TGs" ---
-    # Líneas típicas (simplificado):
-    #   TG:101 has 3 dyn affiliated sites: 1:190 2:19 29:1
+    # --- PARSEO Dynamically Affiliated TGs ---
     tg_aff_pattern = re.compile(
-        r"TG:(\d+)\s+has\s+(\d+)\s+dyn\s+affiliated\s+sites:\s+(.*)", re.IGNORECASE
+        r"TG:(\d+)\s+has\s+(\d+)\s+dyn\s+affiliated\s+sites:\s+(.*)",
+        re.IGNORECASE
     )
 
     for line in lines:
         tg_match = tg_aff_pattern.search(line)
         if tg_match:
-            tg_id = tg_match.group(1)
-            num_sites = tg_match.group(2)
+            tg_id = int(tg_match.group(1))
             raw_sites = tg_match.group(3)
-            # raw_sites por ejemplo "1:190 2:19 29:1"
-            # Podemos separarlo por espacios
             site_info = raw_sites.split()
             for s in site_info:
-                # "1:190" => site=1, affiliated_count=190 (posible)
                 if ":" in s:
                     site_part, aff_count = s.split(":")
                     tg_affiliations_data.append({
-                        "tg_id": int(tg_id),
+                        "tg_id": tg_id,
                         "site_id": int(site_part),
                         "aff_count": int(aff_count)
                     })
 
     tgs_affiliations_df = pd.DataFrame(tg_affiliations_data)
-
-    # Agrega más parseos según necesites (p.ej. topología, licencias, etc.)
 
     return {
         "channels_df": channels_df,
@@ -129,29 +114,159 @@ def parse_diagnostic_file(file_content: str) -> dict:
         "tgs_affiliations_df": tgs_affiliations_df
     }
 
+
 def parse_multiple_files(uploaded_files) -> dict:
     """
     Procesa múltiples archivos. Devuelve un dict con dataframes combinados
-    o varios dataframes en listas, etc.
+    y les aplica la lógica de renombre y mapeo:
+    - 'site_id' -> 'sitio'
+    - 'tg_list' -> 'grupo_num' y 'grupo' (en registrations_df)
+    - 'tg_id' -> 'grupo_num' y 'grupo' (en tgs_affiliations_df)
+    - 'target_id' -> 'grupo_num' y 'grupo' (en channels_df)
+    - Extra: asignar "Hora" en base al nombre del archivo (ej: '10.txt' => hora=10).
     """
     all_channels = []
     all_regs = []
     all_tgs_aff = []
 
+    # Diccionarios de mapeo
+    site_map = {
+        1: "SULFUROS",
+        2: "OXIDOS",
+        3: "OXE",
+        4: "ES"
+    }
+
+    grupo_map = {
+        101: 'SU-OPERACIÓN MINA',
+        102: 'SU-COORD MINA',
+        103: 'SU-MANTENC. MINA',
+        104: 'SU-SERVICIOS MINA',
+        105: 'SU-PERFO. TRONAD.',
+        106: 'SU-PLANIFIC Y DES',
+        107: 'SU-CHANCADO',
+        108: 'SU-MOLIENDA',
+        109: 'SU-FLOTACIÓN',
+        110: 'SU-MANT MEC',
+        111: 'SU-MANT ELEC',
+        112: 'SU-MOLY',
+        113: 'SU-RELAVES',
+        114: 'SU-GERENCIA PROYECTO',
+        117: 'SU-GERENCIA PROYECTO 01',
+        119: 'ES-PERF TRONAD',
+        115: 'ES-OP MINA',
+        116: 'ES-COORD MINA',
+        122: 'ES-MANTENC MINA',
+        123: 'ES-SERV MINA',
+        124: 'ES-PLAN DESA',
+        120: 'SU-MANT SEG1',
+        121: 'SU-MANT SEG2',
+        201: 'OX-OPERACIÓN MINA',
+        202: 'OX-COORD MINA',
+        203: 'OX-MANTENC. MINA',
+        204: 'OX-SERVICIOS MINA',
+        205: 'OX-PERFO. TRONAD.',
+        206: 'OX-PLANIFIC Y DES',
+        207: 'OX-AREA SECA',
+        208: 'OX-AREA HUMEDA',
+        209: 'OX-RIPIOS',
+        210: 'OX-MANTENC MEC',
+        211: 'OX-MANTENC ELEC',
+        212: 'OX-SX-EW',
+        213: 'OX-CHANCADO',
+        301: 'ENC-OPERACIÓN MINA',
+        302: 'ENC-COORD MINA',
+        303: 'ENC-MANTENC. MINA',
+        304: 'ENC-SERVICIOS MINA',
+        305: 'ENC-PERFO TRONAD',
+        306: 'ENC-PLANIFIC Y DES',
+        307: 'ENC-SERVICIOS MINA 2',
+        308: 'ENC-SERVICIOS MINA 3',
+        309: 'ENC-SERVICIOS MINA 4',
+        501: 'DESPACHO PRIMARIO',
+        601: 'PROTECC IND',
+        602: 'COORD EMERG',
+        603: 'EMER',
+        604: 'TICA',
+        605: 'GLOBAL',
+        606: 'BODEGA',
+        607: 'DESPACHO',
+        901: 'DESPACHO SECUNDARIO',
+        999: 'DESCONOCIDO'
+    }
+
+    # Regex para extraer el número de hora del nombre de archivo, ejemplo "10.txt" => 10
+    hour_pattern = re.compile(r"(\d+)\.txt$", re.IGNORECASE)
+
     for uploaded_file in uploaded_files:
+        filename = uploaded_file.name  # nombre: ej. "10.txt"
+        match_hour = hour_pattern.search(filename)
+        hour_value = None
+        if match_hour:
+            hour_value = int(match_hour.group(1))
+
         content = uploaded_file.read().decode("utf-8", errors="ignore")
         parsed = parse_diagnostic_file(content)
+
+        # Si encontramos hora, la asignamos en registrations_df como nueva columna
+        if hour_value is not None:
+            parsed["registrations_df"]["Hora"] = hour_value
 
         all_channels.append(parsed["channels_df"])
         all_regs.append(parsed["registrations_df"])
         all_tgs_aff.append(parsed["tgs_affiliations_df"])
 
     # Concatenamos la info de todos los archivos
-    channels_df = pd.concat(all_channels, ignore_index=True)
-    registrations_df = pd.concat(all_regs, ignore_index=True)
-    tgs_affiliations_df = pd.concat(all_tgs_aff, ignore_index=True)
+    if all_channels:
+        channels_df = pd.concat(all_channels, ignore_index=True)
+    else:
+        channels_df = pd.DataFrame()
 
-    # Retornamos todo
+    if all_regs:
+        registrations_df = pd.concat(all_regs, ignore_index=True)
+    else:
+        registrations_df = pd.DataFrame()
+
+    if all_tgs_aff:
+        tgs_affiliations_df = pd.concat(all_tgs_aff, ignore_index=True)
+    else:
+        tgs_affiliations_df = pd.DataFrame()
+
+    # Renombramos y mapeamos site_id -> sitio
+    for df in [channels_df, registrations_df, tgs_affiliations_df]:
+        if "site_id" in df.columns:
+            df.rename(columns={"site_id": "sitio"}, inplace=True)
+            df["sitio"] = df["sitio"].apply(lambda x: site_map[x] if x in site_map else x)
+
+    # Renombramos target_id -> grupo_num y mapear a grupo en channels_df
+    if "target_id" in channels_df.columns:
+        channels_df.rename(columns={"target_id": "grupo_num"}, inplace=True)
+        # Mapear 'grupo_num' a 'grupo' usando grupo_map o asignar 'Grupo 400-499' si está en el rango
+        channels_df["grupo"] = channels_df["grupo_num"].apply(
+            lambda x: grupo_map[x] if (isinstance(x, int) and x in grupo_map) else ('Grupo 400-499' if 400 <= x < 500 else x)
+        )
+
+    # Renombramos tg_list -> grupo_num y mapear a grupo en registrations_df
+    if "tg_list" in registrations_df.columns:
+        registrations_df.rename(columns={"tg_list": "grupo_num"}, inplace=True)
+        # Separar múltiples IDs si existen
+        registrations_df['grupo_num'] = registrations_df['grupo_num'].astype(str).str.split(',')
+        registrations_df = registrations_df.explode('grupo_num')
+        registrations_df['grupo_num'] = pd.to_numeric(registrations_df['grupo_num'], errors='coerce')
+        # Mapear a grupo usando grupo_map o asignar 'Grupo 400-499' si está en el rango
+        registrations_df["grupo"] = registrations_df["grupo_num"].apply(
+            lambda x: grupo_map[x] if (pd.notnull(x) and x in grupo_map) else ('Grupo 400-499' if 400 <= x < 500 else x)
+        )
+
+    # Renombramos tg_id -> grupo_num y mapear a grupo en tgs_affiliations_df
+    if "tg_id" in tgs_affiliations_df.columns:
+        tgs_affiliations_df.rename(columns={"tg_id": "grupo_num"}, inplace=True)
+        tgs_affiliations_df["grupo_num"] = pd.to_numeric(tgs_affiliations_df["grupo_num"], errors='coerce')
+        # Mapear a grupo usando grupo_map o asignar 'Grupo 400-499' si está en el rango
+        tgs_affiliations_df["grupo"] = tgs_affiliations_df["grupo_num"].apply(
+            lambda x: grupo_map[x] if (pd.notnull(x) and x in grupo_map) else ('Grupo 400-499' if 400 <= x < 500 else x)
+        )
+
     return {
         "channels_df": channels_df,
         "registrations_df": registrations_df,
