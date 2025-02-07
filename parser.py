@@ -183,8 +183,8 @@ def parse_multiple_files(uploaded_files) -> dict:
     307: 'ENC-AREA SECA',
     308: 'ENC-AREA HUMEDA',
     309: 'ENC-RIPIOS',
-    310: 'ENC-MANTENC MEC'
-    311: 'ENC-MANTENC ELEC'
+    310: 'ENC-MANTENC MEC',
+    311: 'ENC-MANTENC ELEC',
     501: 'DESPACHO PRIMARIO',
     601: 'PROTECC IND',
     602: 'COORD EMERG',
